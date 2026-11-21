@@ -1,20 +1,30 @@
 name: Log ATIS
 
+# GitHub's own schedule is unreliable (runs are often skipped for hours), so each run
+# loops for ~5h45m, checking every CHECK_EVERY seconds, then starts the next run itself.
+# The hourly schedule below is only a backup that restarts the chain if it ever stops.
+
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/20 * * * *"   # every 20 minutes (UTC). GitHub may start runs a few minutes late.
-  workflow_dispatch:          # lets you run it manually from the Actions tab
+    - cron: "7 * * * *"
 
 permissions:
-  contents: write             # needed to commit the logs back to the repo
+  contents: write   # commit the logs
+  actions: write    # let the run start the next run
 
 concurrency:
   group: atis-log
-  cancel-in-progress: false
+  cancel-in-progress: false   # never kill a running logger; extra runs just wait
+
+env:
+  CHECK_EVERY: 300        # seconds between checks (300 = 5 minutes)
+  RUN_FOR: 20700          # seconds per run (5h45m, GitHub's max job time is 6h)
 
 jobs:
   log:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -22,17 +32,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check ATIS once
-        run: python atis_logger.py --once --airports ESSA ESGG --logdir atis_logs
-
-      - name: Commit new ATIS (only if something changed)
+      - name: Check ATIS in a loop
         run: |
           git config user.name  "atis-logger"
           git config user.email "atis-logger@users.noreply.github.com"
-          git add atis_logs
-          if git diff --cached --quiet; then
-            echo "No new ATIS."
-          else
-            git commit -m "New ATIS $(date -u '+%Y-%m-%d %H:%MZ')"
-            git push
-          fi
+          end=$((SECONDS + RUN_FOR))
+          while [ $SECONDS -lt $end ]; do
+            git pull --rebase --quiet || true
+            python atis_logger.py --once --airports ESSA ESGG --logdir atis_logs || true
+            git add atis_logs
+            if ! git diff --cached --quiet; then
+              git commit --quiet -m "New ATIS $(date -u '+%Y-%m-%d %H:%MZ')"
+              git push --quiet || { git pull --rebase --quiet && git push --quiet; } || true
+            fi
+            sleep "$CHECK_EVERY"
+          done
+
+      - name: Start the next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run atis.yml --ref "${{ github.ref_name }}" --repo "${{ github.repository }}"
