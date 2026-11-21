@@ -1,0 +1,38 @@
+name: Log ATIS
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"   # every 20 minutes (UTC). GitHub may start runs a few minutes late.
+  workflow_dispatch:          # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write             # needed to commit the logs back to the repo
+
+concurrency:
+  group: atis-log
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check ATIS once
+        run: python atis_logger.py --once --airports ESSA ESGG --logdir atis_logs
+
+      - name: Commit new ATIS (only if something changed)
+        run: |
+          git config user.name  "atis-logger"
+          git config user.email "atis-logger@users.noreply.github.com"
+          git add atis_logs
+          if git diff --cached --quiet; then
+            echo "No new ATIS."
+          else
+            git commit -m "New ATIS $(date -u '+%Y-%m-%d %H:%MZ')"
+            git push
+          fi

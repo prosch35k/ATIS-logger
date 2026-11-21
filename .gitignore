@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+atis_logs/.state.json.tmp
